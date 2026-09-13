@@ -20,15 +20,21 @@ export default function Home() {
   const [selectedBrand, setSelectedBrand] = useState(brands[0])
   const [tab, setTab] = useState('Overview')
   const [user, setUser] = useState<{ email?: string } | null>(null)
-  const [authOpen, setAuthOpen] = useState(false)
+  const [authLoading, setAuthLoading] = useState(true)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
   const supabase = useMemo(() => createBrowserClient(), [])
 
-  useEffect(() => { supabase.auth.getUser().then(({ data }) => setUser(data.user)) }, [supabase])
-  async function signIn(e: React.FormEvent) { e.preventDefault(); setAuthError(''); const { data, error } = await supabase.auth.signInWithPassword({ email, password }); if (error) setAuthError(error.message); else { setUser(data.user); setAuthOpen(false) } }
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUser(data.user)).finally(() => setAuthLoading(false))
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null))
+    return () => listener.subscription.unsubscribe()
+  }, [supabase])
+  async function signIn(e: React.FormEvent) { e.preventDefault(); setAuthError(''); const { data, error } = await supabase.auth.signInWithPassword({ email, password }); if (error) setAuthError(error.message); else setUser(data.user) }
   async function google() { const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } }); if (error) setAuthError(error.message) }
+
+  if (authLoading || !user) return <AuthScreen loading={authLoading} email={email} password={password} error={authError} setEmail={setEmail} setPassword={setPassword} signIn={signIn} google={google} />
 
   return <main className="shell">
     <aside className="sidebar">
@@ -40,12 +46,15 @@ export default function Home() {
       <div className="sidebar-bottom"><button className="help"><CircleHelp size={17}/> Help centre</button><div className="profile"><div className="avatar">MA</div><div><strong>{user?.email?.split('@')[0] ?? 'Mohamed Ali'}</strong><small>{user ? 'Authenticated user' : 'Preview workspace'}</small></div><ChevronDown size={16}/></div></div>
     </aside>
     <section className="content">
-      <header className="topbar"><div><div className="eyebrow">CLIENT PORTAL / {selectedBrand.name.toUpperCase()}</div><h1>{tab}</h1></div><div className="top-actions"><button className="icon-btn"><Search size={19}/></button>{user ? <button className="outline" onClick={() => supabase.auth.signOut().then(() => setUser(null))}><LogOut size={16}/> Sign out</button> : <button className="outline" onClick={() => setAuthOpen(true)}>Sign in</button>}<button className="primary"><Send size={16}/> New campaign</button></div></header>
+      <header className="topbar"><div><div className="eyebrow">CLIENT PORTAL / {selectedBrand.name.toUpperCase()}</div><h1>{tab}</h1></div><div className="top-actions"><button className="icon-btn"><Search size={19}/></button><button className="outline" onClick={() => supabase.auth.signOut()}><LogOut size={16}/> Sign out</button><button className="primary"><Send size={16}/> New campaign</button></div></header>
       <div className="brand-banner"><div className="brand-title"><span className="large-dot" style={{background: selectedBrand.accent}}/><div><h2>{selectedBrand.name}</h2><p>{selectedBrand.country} · All campaigns</p></div></div><button className="selector">{selectedBrand.name}<ChevronDown size={16}/></button></div>
       {tab === 'Overview' && <Overview brand={selectedBrand}/>} {tab === 'Campaigns' && <CampaignTable/>} {tab === 'Contacts' && <Contacts brand={selectedBrand}/>} {tab === 'Reports' && <Overview brand={selectedBrand}/>} 
     </section>
-    {authOpen && <div className="modal-backdrop"><form className="modal" onSubmit={signIn}><button type="button" className="close" onClick={() => setAuthOpen(false)}>×</button><div className="eyebrow">VELOCITY GROWTH</div><h2>Welcome back</h2><p>Sign in to your brand workspace.</p><label>Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} required /></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} required /></label>{authError && <div className="error">{authError}</div>}<button className="primary full">Sign in</button><div className="or">or</div><button type="button" className="google" onClick={google}>Continue with Google</button></form></div>}
   </main>
+}
+
+function AuthScreen({ loading, email, password, error, setEmail, setPassword, signIn, google }: { loading: boolean; email: string; password: string; error: string; setEmail: (value: string) => void; setPassword: (value: string) => void; signIn: (event: React.FormEvent) => void; google: () => void }) {
+  return <main className="auth-screen"><div className="auth-card"><div className="brandmark auth-brand"><span>V</span><div>velocity<span className="muted">growth</span></div></div><div className="eyebrow">CLIENT CAMPAIGN PORTAL</div><h1>{loading ? 'Loading workspace' : 'Welcome back'}</h1><p>{loading ? 'Checking your secure session…' : 'Sign in to access your brand workspace.'}</p>{!loading && <form onSubmit={signIn}><label>Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} required /></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} required /></label>{error && <div className="error">{error}</div>}<button className="primary full">Sign in</button><div className="or">or</div><button type="button" className="google" onClick={google}>Continue with Google</button></form>}</div></main>
 }
 
 function Overview({ brand }: { brand: Brand }) { return <div className="page"><div className="welcome"><div><span className="pill">LIVE DATA</span><h2>Good morning, Mohamed <span>✦</span></h2><p>Here’s how {brand.name} is performing across the last 30 days.</p></div><button className="ghost"><Download size={16}/> Export report</button></div><div className="metrics"><Metric label="Total customers" value={brand.customers} note="+4.8% vs last month"/><Metric label="Contactable audience" value={brand.contactable} note="81.2% of total customers"/><Metric label="Campaigns sent" value="28" note="+6 this month"/><Metric label="Avg. delivery rate" value="94.6%" note="+1.2% vs last month"/></div><div className="grid"><section className="card chart-card"><div className="card-head"><div><h3>Signups over time</h3><p>Last 30 days · all sources</p></div><button className="small-select">Last 30 days <ChevronDown size={14}/></button></div><div className="chart"><div className="yaxis"><span>60</span><span>40</span><span>20</span><span>0</span></div><div className="bars">{brand.trend.concat([32, 46, 39, 48, 56, 51, 59, 42, 44, 37, 53, 47, 62, 52, 55, 49, 58, 63, 48, 55, 61, 57, 66, 60, 70]).map((n,i) => <i key={i} style={{height: `${n}%`, background: brand.accent}}/> )}</div></div><div className="chart-caption"><span><i className="legend" style={{background: brand.accent}}/> New signups</span><span>Peak: 70 signups</span></div></section><section className="card"><div className="card-head"><div><h3>Audience health</h3><p>Based on latest provider events</p></div></div><div className="donut-wrap"><div className="donut" style={{background: `conic-gradient(${brand.accent} 0 81%, #edf0f3 81% 100%)`}}><div><strong>81%</strong><small>contactable</small></div></div><div className="health-list"><div><b className="dot green"/> Active <strong>76.4%</strong></div><div><b className="dot red"/> Bounced <strong>8.7%</strong></div><div><b className="dot grey"/> Unsubscribed <strong>6.4%</strong></div></div></div></section></div><section className="card"><div className="card-head"><div><h3>Recent campaigns</h3><p>Performance across your latest sends</p></div><button className="link" onClick={() => {}}>View all campaigns →</button></div><CampaignRows/></section></div> }

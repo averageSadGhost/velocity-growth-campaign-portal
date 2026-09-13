@@ -6,3 +6,4 @@ data/raw
 data/seed.zip
 .vercel
 submission.private.md
+*.tsbuildinfo

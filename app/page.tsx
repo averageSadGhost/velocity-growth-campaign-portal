@@ -57,6 +57,13 @@ export default function Home() {
   const brand = brands.find((b) => b.id === brandId),
     owner = members.some((m) => m.brand_id === brandId && m.role === "owner");
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (code) {
+      window.location.replace(`/auth/callback?code=${encodeURIComponent(code)}`);
+      return;
+    }
+    if (params.has("auth_error")) setError("Google sign-in could not be completed. Please try again.");
     db.auth.getUser().then(({ data }) => {
       setUser(data.user);
       setAuthReady(true);

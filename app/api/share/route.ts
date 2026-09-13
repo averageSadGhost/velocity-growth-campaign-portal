@@ -1,21 +1,16 @@
-import { NextResponse } from "next/server";
-import { getRequestSupabase } from "@/lib/supabase-server";
-
-async function hashPassword(password: string) {
-  const bytes = new TextEncoder().encode(password);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export async function POST(request: Request) {
-  const input = await request.json().catch(() => null);
-  if (!input?.brandId || !input?.campaignId || typeof input.password !== "string" || input.password.length < 8) return NextResponse.json({ error: "brandId, campaignId, and an 8-character password are required" }, { status: 400 });
-  const supabase = await getRequestSupabase();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  const { data: member } = await supabase.from("brand_members").select("role").eq("user_id", user.id).eq("brand_id", input.brandId).maybeSingle();
-  if (member?.role !== "owner") return NextResponse.json({ error: "Only brand owners can create share links" }, { status: 403 });
-  const { data, error } = await supabase.from("share_links").insert({ brand_id: input.brandId, campaign_id: input.campaignId, password_hash: await hashPassword(input.password), created_by: user.id }).select("token").single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ token: data.token });
+import {identity,failure} from '@/lib/api';
+import {getAdminSupabase} from '@/lib/supabase-server';
+import {passwordHash,uuid} from '@/lib/security';
+export async function POST(request:Request){
+ try{
+  const {user,members,db}=await identity(request),input=await request.json();
+  if(!uuid(input.campaignId)||!uuid(input.brandId)) throw new Error('Invalid campaign');
+  if(!members.some(m=>m.brand_id===input.brandId&&m.role==='owner')) throw new Error('Forbidden');
+  const {data:campaign}=await db.from('campaigns').select('id').eq('id',input.campaignId).eq('brand_id',input.brandId).single();
+  if(!campaign) throw new Error('Forbidden');
+  if(typeof input.password!=='string'||input.password.length<8||input.password.length>256) throw new Error('Use a password of 8–256 characters');
+  const {data,error}=await getAdminSupabase().from('share_links').insert({brand_id:input.brandId,campaign_id:campaign.id,password_hash:passwordHash(input.password),created_by:user.id}).select('token').single();
+  if(error) throw new Error(error.message);
+  return Response.json(data,{headers:{'Cache-Control':'no-store'}});
+ }catch(error){return failure(error)}
 }

@@ -19,8 +19,8 @@ create table public.contacts (
   id uuid primary key default gen_random_uuid(), brand_id uuid not null references public.brands(id) on delete cascade,
   external_id text not null, full_name text, email text, phone text, country text, city text,
   signup_at timestamptz, status text, consent_marketing boolean not null default false,
-  deleted_at timestamptz, suppressed_until timestamptz, brand_code text, notes text, source_file text,
-  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  deleted_at timestamptz, suppressed_until timestamptz, notes text, source_file text,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), brand_code text,
   unique(brand_id, external_id)
 );
 create index contacts_brand_signup_idx on public.contacts(brand_id, signup_at);

@@ -4,3 +4,5 @@ node_modules
 !.env.example
 data/raw
 data/seed.zip
+.vercel
+submission.private.md

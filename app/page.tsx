@@ -46,6 +46,7 @@ type Contact = {
   consent_marketing: boolean;
   signup_at: string | null;
 };
+type SignupPoint = { label: string; count: number };
 
 const fallbackBrands: Brand[] = [
   {
@@ -107,7 +108,7 @@ function downloadCsv(
 }
 
 export default function Home() {
-  const [user, setUser] = useState<{ email?: string } | null>(null);
+  const [user, setUser] = useState<{ id: string; email?: string } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -160,7 +161,7 @@ function Portal({
   user,
   supabase,
 }: {
-  user: { email?: string };
+  user: { id: string; email?: string };
   supabase: ReturnType<typeof createBrowserClient>;
 }) {
   const [brands, setBrands] = useState<Brand[]>(fallbackBrands);
@@ -173,6 +174,13 @@ function Portal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [showSend, setShowSend] = useState(false);
+  const [sendCampaignId, setSendCampaignId] = useState("");
+  const [memberRole, setMemberRole] = useState<"owner" | "analyst" | null>(null);
+  const [sendLoading, setSendLoading] = useState(false);
+  const [sendCount, setSendCount] = useState<number | null>(null);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [signupSeries, setSignupSeries] = useState<SignupPoint[]>([]);
   const selectedBrand =
     brands.find((brand) => brand.id === selectedBrandId) ?? brands[0];
   const filteredCampaigns = campaigns.filter((campaign) =>
@@ -200,6 +208,10 @@ function Portal({
   }, [supabase]);
   useEffect(() => {
     if (!selectedBrand?.id) return;
+    supabase.from("brand_members").select("role").eq("user_id", user.id).eq("brand_id", selectedBrand.id).maybeSingle().then(({ data }) => setMemberRole((data?.role as "owner" | "analyst" | null) ?? null));
+  }, [selectedBrand?.id, supabase, user.id]);
+  useEffect(() => {
+    if (!selectedBrand?.id) return;
     let cancelled = false;
     setLoading(true);
     Promise.all([
@@ -222,10 +234,26 @@ function Portal({
         .eq("brand_id", selectedBrand.id)
         .order("sent_at_utc", { ascending: false, nullsFirst: false })
         .limit(50),
-    ]).then(async ([total, contactable, campaignQuery]) => {
+      supabase
+        .from("contacts")
+        .select("signup_at")
+        .eq("brand_id", selectedBrand.id)
+        .gte("signup_at", new Date(Date.now() - 29 * 86400000).toISOString())
+        .not("signup_at", "is", null)
+        .limit(100000),
+    ]).then(async ([total, contactable, campaignQuery, signups]) => {
       if (cancelled) return;
-      if (total.error || contactable.error || campaignQuery.error)
+      if (total.error || contactable.error || campaignQuery.error || signups.error)
         setError("Some workspace data could not be loaded.");
+      const points = Array.from({ length: 30 }, (_, index) => {
+        const date = new Date(Date.now() - (29 - index) * 86400000);
+        return { key: date.toISOString().slice(0, 10), label: date.toLocaleDateString("en", { month: "short", day: "numeric" }), count: 0 };
+      });
+      for (const signup of signups.data ?? []) {
+        const point = points.find((item) => item.key === String(signup.signup_at).slice(0, 10));
+        if (point) point.count += 1;
+      }
+      setSignupSeries(points.map(({ label, count }) => ({ label, count })));
       setBrands((current) =>
         current.map((brand) =>
           brand.id === selectedBrand.id
@@ -294,6 +322,45 @@ function Portal({
     setCampaigns((current) => [data as Campaign, ...current]);
     setShowCreate(false);
     setTab("Campaigns");
+  }
+  async function sendCampaign(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const campaign = campaigns.find((item) => item.id === sendCampaignId);
+    if (!selectedBrand || !campaign || memberRole !== "owner") return;
+    setSendLoading(true);
+    setError("");
+    const { data: recipients, error: recipientError } = await supabase.from("contacts").select("external_id,email,phone").eq("brand_id", selectedBrand.id).eq("consent_marketing", true).is("deleted_at", null).is("suppressed_until", null);
+    if (recipientError || !recipients?.length) {
+      setError(recipientError?.message ?? "No contactable recipients are available.");
+      setSendLoading(false);
+      return;
+    }
+    const idempotencyKey = `${selectedBrand.id}:${campaign.id}:${user.id}`;
+    const response = await fetch("/api/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ brandId: selectedBrand.id, brandName: selectedBrand.name, campaignId: campaign.id, campaignName: campaign.campaign_name, idempotencyKey, approvedAt: new Date().toISOString(), recipients }) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) setError(payload.error ?? "The campaign could not be sent.");
+    else setError(`Send recorded: ${payload.replayed ? "existing batch reused" : "provider accepted the batch"}.`);
+    setSendLoading(false);
+    setShowSend(false);
+  }
+  async function prepareSend(campaignId: string) {
+    if (memberRole !== "owner" || !selectedBrand) return;
+    const { count, error: countError } = await supabase.from("contacts").select("id", { count: "exact", head: true }).eq("brand_id", selectedBrand.id).eq("consent_marketing", true).is("deleted_at", null).is("suppressed_until", null);
+    if (countError) { setError(countError.message); return; }
+    setSendCampaignId(campaignId);
+    setSendCount(count ?? 0);
+    setShowSend(true);
+  }
+  async function shareCampaign(campaignId: string) {
+    if (memberRole !== "owner") return;
+    const password = window.prompt("Set a password for this share link (8+ characters):") ?? "";
+    if (password.length < 8) { setError("Share-link passwords must be at least 8 characters."); return; }
+    setShareLoading(true);
+    const response = await fetch("/api/share", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ brandId: selectedBrand.id, campaignId, password }) });
+    const payload = await response.json().catch(() => ({}));
+    setShareLoading(false);
+    if (!response.ok) setError(payload.error ?? "Could not create share link.");
+    else window.prompt("Copy this protected results link:", `${window.location.origin}/share/${payload.token}`);
   }
 
   return (
@@ -402,6 +469,7 @@ function Portal({
             campaigns={campaigns}
             loading={loading}
             onCampaigns={() => setTab("Campaigns")}
+            signupSeries={signupSeries}
             onExport={() =>
               downloadCsv(
                 `${selectedBrand?.name}-campaign-report.csv`,
@@ -418,6 +486,10 @@ function Portal({
             setQuery={setCampaignQuery}
             loading={loading}
             onCreate={() => setShowCreate(true)}
+            canSend={memberRole === "owner"}
+            onSend={prepareSend}
+            onShare={shareCampaign}
+            shareLoading={shareLoading}
             onExport={() =>
               downloadCsv(
                 `${selectedBrand?.name}-campaigns.csv`,
@@ -465,6 +537,7 @@ function Portal({
             campaigns={campaigns}
             loading={loading}
             onCampaigns={() => setTab("Campaigns")}
+            signupSeries={signupSeries}
             onExport={() =>
               downloadCsv(
                 `${selectedBrand?.name}-campaign-report.csv`,
@@ -512,6 +585,19 @@ function Portal({
             <button className="primary full">
               <Plus size={16} /> Create campaign
             </button>
+          </form>
+        </div>
+      )}
+      {showSend && (
+        <div className="modal-backdrop">
+          <form className="modal create-modal" onSubmit={sendCampaign}>
+            <button type="button" className="close" onClick={() => setShowSend(false)}><X /></button>
+            <span className="pill">OWNER ACTION</span>
+            <h2>Confirm campaign send</h2>
+            <p>This sends to every current contactable recipient. The batch is idempotent and safely recorded before the provider request.</p>
+            <label>Campaign<select value={sendCampaignId} onChange={(event) => setSendCampaignId(event.target.value)} required>{campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.campaign_name}</option>)}</select></label>
+            <div className="send-confirmation"><strong>{sendCount === null ? "Calculating recipients…" : `${number.format(sendCount)} recipients will receive this campaign`}</strong><small>Marketing consent is required and deleted or suppressed contacts are excluded.</small></div>
+            <div className="form-actions"><button type="button" className="ghost" onClick={() => setShowSend(false)}>Cancel</button><button className="primary" type="submit" disabled={sendLoading || !sendCount}>{sendLoading ? "Sending…" : "Confirm and send"}</button></div>
           </form>
         </div>
       )}
@@ -570,12 +656,14 @@ function Overview({
   loading,
   onCampaigns,
   onExport,
+  signupSeries = [],
 }: {
   brand: Brand;
   campaigns: Campaign[];
   loading: boolean;
   onCampaigns: () => void;
   onExport: () => void;
+  signupSeries?: SignupPoint[];
 }) {
   const delivered = campaigns.reduce(
     (sum, item) => sum + item.reported_delivered,
@@ -623,38 +711,31 @@ function Overview({
         <section className="card chart-card">
           <div className="card-head">
             <div>
-              <h3>Campaign activity</h3>
-              <p>
-                {campaigns.length
-                  ? "Latest campaigns in this workspace"
-                  : "Create your first campaign to see activity"}
-              </p>
+              <h3>Signups per day</h3>
+              <p>Customer signups across the last 30 days</p>
             </div>
             <button className="small-select">
               Latest <ChevronDown size={14} />
             </button>
           </div>
           <div className="chart activity-chart">
-            {campaigns
-              .slice(0, 12)
-              .reverse()
-              .map((item) => (
+            {signupSeries.map((item) => (
                 <i
-                  key={item.id}
+                  key={item.label}
                   style={{
-                    height: `${Math.max(12, Math.min(92, item.reported_sent ? (item.reported_delivered / item.reported_sent) * 100 : 12))}%`,
+                    height: `${Math.max(8, Math.min(92, signupSeries.reduce((max, point) => Math.max(max, point.count), 1) ? (item.count / signupSeries.reduce((max, point) => Math.max(max, point.count), 1)) * 92 : 8))}%`,
                     background: brand.accent,
                   }}
-                  title={`${item.campaign_name}: ${item.reported_delivered} delivered`}
+                  title={`${item.label}: ${item.count} signups`}
                 />
               ))}
           </div>
           <div className="chart-caption">
             <span>
               <i className="legend" style={{ background: brand.accent }} />{" "}
-              Delivery rate by campaign
+              Daily signups
             </span>
-            <span>{campaigns.length} total</span>
+            <span>{signupSeries.reduce((sum, item) => sum + item.count, 0)} total</span>
           </div>
         </section>
         <section className="card">
@@ -733,9 +814,17 @@ function Metric({
 function CampaignRows({
   campaigns,
   loading,
+  canSend = false,
+  onSend,
+  onShare,
+  shareLoading = false,
 }: {
   campaigns: Campaign[];
   loading: boolean;
+  canSend?: boolean;
+  onSend?: (campaignId: string) => void;
+  onShare?: (campaignId: string) => void;
+  shareLoading?: boolean;
 }) {
   if (loading)
     return <div className="empty-state">Loading campaign performance…</div>;
@@ -756,6 +845,7 @@ function CampaignRows({
             <th>DELIVERED</th>
             <th>OPEN RATE</th>
             <th>STATUS</th>
+            {canSend && <th>ACTION</th>}
           </tr>
         </thead>
         <tbody>
@@ -778,6 +868,7 @@ function CampaignRows({
                   {campaign.sent_at_utc ? "Delivered" : "Draft"}
                 </span>
               </td>
+              {canSend && <td><button className="link" onClick={() => onSend?.(campaign.id)}>Send</button><button className="link" onClick={() => onShare?.(campaign.id)} disabled={shareLoading}>Share</button></td>}
             </tr>
           ))}
         </tbody>
@@ -791,6 +882,10 @@ function CampaignTable({
   setQuery,
   loading,
   onCreate,
+  canSend,
+  onSend,
+  onShare,
+  shareLoading,
   onExport,
 }: {
   campaigns: Campaign[];
@@ -798,6 +893,10 @@ function CampaignTable({
   setQuery: (value: string) => void;
   loading: boolean;
   onCreate: () => void;
+  canSend: boolean;
+  onSend: (campaignId: string) => void;
+  onShare: (campaignId: string) => void;
+  shareLoading: boolean;
   onExport: () => void;
 }) {
   return (
@@ -815,7 +914,7 @@ function CampaignTable({
         {query && campaigns.length === 0 ? (
           <div className="empty-state">No campaigns match “{query}”.</div>
         ) : (
-          <CampaignRows campaigns={campaigns} loading={loading} />
+          <CampaignRows campaigns={campaigns} loading={loading} canSend={canSend} onSend={onSend} onShare={onShare} shareLoading={shareLoading} />
         )}
       </section>
     </div>

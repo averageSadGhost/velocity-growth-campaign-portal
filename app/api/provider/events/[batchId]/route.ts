@@ -12,5 +12,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ bat
   const rows = body.events.filter((event: any) => event?.event_id && event?.external_contact_id && event?.event_type).map((event: any) => ({ brand_id: batch.brand_id, event_id: event.event_id, external_contact_id: event.external_contact_id, campaign_external_id: event.campaign_external_id || '', event_type: event.event_type, channel: event.channel || null, occurred_at_utc: event.occurred_at_utc || new Date().toISOString() }))
   const { error } = await admin.from('provider_events').upsert(rows, { onConflict: 'brand_id,event_id', ignoreDuplicates: true })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  for (const event of rows) {
+    const type = event.event_type.toLowerCase()
+    const field = type.includes('deliver') ? 'reported_delivered' : type.includes('bounce') ? 'reported_bounced' : type.includes('open') ? 'reported_opens' : type.includes('click') ? 'reported_clicks' : null
+    if (field) {
+      const { data: campaign } = await admin.from('campaigns').select(`id,${field}`).eq('brand_id', batch.brand_id).eq('external_id', event.campaign_external_id).maybeSingle()
+      const current = campaign as { id: string; [key: string]: unknown } | null
+      if (current) await admin.from('campaigns').update({ [field]: Number(current[field] ?? 0) + 1 }).eq('id', current.id).eq('brand_id', batch.brand_id)
+    }
+    if (type.includes('unsubscribe')) await admin.from('contacts').update({ consent_marketing: false, status: 'unsubscribed' }).eq('brand_id', batch.brand_id).eq('external_id', event.external_contact_id)
+  }
   return NextResponse.json({ accepted: rows.length })
 }

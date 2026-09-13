@@ -11,6 +11,7 @@ import {
   Megaphone,
   Plus,
   Search,
+  Settings as SettingsIcon,
   Users,
   X,
 } from "lucide-react";
@@ -306,7 +307,7 @@ function Portal({
         </div>
         <div className="side-label">WORKSPACE</div>
         <nav>
-          {["Overview", "Campaigns", "Contacts", "Reports"].map((item, i) => (
+          {["Overview", "Campaigns", "Contacts", "Reports", "Settings"].map((item, i) => (
             <button
               key={item}
               className={tab === item ? "nav active" : "nav"}
@@ -318,8 +319,10 @@ function Portal({
                 <Megaphone size={18} />
               ) : i === 2 ? (
                 <Users size={18} />
-              ) : (
+              ) : i === 3 ? (
                 <BarChart3 size={18} />
+              ) : (
+                <SettingsIcon size={18} />
               )}{" "}
               {item}
             </button>
@@ -471,6 +474,7 @@ function Portal({
             }
           />
         )}
+        {tab === "Settings" && <SettingsPage brand={selectedBrand} user={user} />}
       </section>
       {showCreate && (
         <div className="modal-backdrop">
@@ -512,6 +516,51 @@ function Portal({
         </div>
       )}
     </main>
+  );
+}
+
+function SettingsPage({ brand, user }: { brand: Brand; user: { email?: string } }) {
+  const [emailNotifications, setEmailNotifications] = useState(true);
+  const [weeklyDigest, setWeeklyDigest] = useState(true);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem(`velocity-settings-${user.email ?? "user"}`);
+    if (!raw) return;
+    try {
+      const preferences = JSON.parse(raw) as { emailNotifications?: boolean; weeklyDigest?: boolean };
+      if (typeof preferences.emailNotifications === "boolean") setEmailNotifications(preferences.emailNotifications);
+      if (typeof preferences.weeklyDigest === "boolean") setWeeklyDigest(preferences.weeklyDigest);
+    } catch {
+      window.localStorage.removeItem(`velocity-settings-${user.email ?? "user"}`);
+    }
+  }, [user.email]);
+
+  function savePreferences(event: React.FormEvent) {
+    event.preventDefault();
+    window.localStorage.setItem(`velocity-settings-${user.email ?? "user"}`, JSON.stringify({ emailNotifications, weeklyDigest }));
+    setSaved(true);
+    window.setTimeout(() => setSaved(false), 2400);
+  }
+
+  return (
+    <div className="page settings-page">
+      <style>{`.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.settings-card{min-height:240px}.setting-detail{display:flex;align-items:center;gap:12px;border-top:1px solid #e7ebef;padding:17px 0}.setting-detail:first-of-type{border-top:0;padding-top:0}.setting-detail strong,.setting-detail small{display:block}.setting-detail strong{font-size:13px}.setting-detail small{color:#7d8994;font-size:11px;margin-top:4px}.setting-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:#fff0ec;color:#ff6542}.toggle-row{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid #e7ebef;padding:17px 0;cursor:pointer}.toggle-row:first-of-type{border-top:0;padding-top:0}.toggle-row strong,.toggle-row small{display:block}.toggle-row strong{font-size:13px}.toggle-row small{color:#7d8994;font-size:11px;margin-top:4px}.toggle-row input{appearance:none;width:38px;height:22px;border-radius:999px;background:#d0d5dd;position:relative;flex:none;cursor:pointer;transition:background .2s}.toggle-row input:after{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #17212b33;transition:transform .2s}.toggle-row input:checked{background:#ff6542}.toggle-row input:checked:after{transform:translateX(16px)}.settings-actions{display:flex;align-items:center;gap:12px;margin-top:12px}.saved-message{color:#41966f;font-size:11px}@media(max-width:800px){.settings-grid{grid-template-columns:1fr}}`}</style>
+      <div className="welcome"><div><span className="pill">WORKSPACE SETTINGS</span><h2>Settings</h2><p>Manage your account and preferences for this client workspace.</p></div></div>
+      <div className="settings-grid">
+        <section className="card settings-card">
+          <div className="card-head"><div><h3>Account</h3><p>Your authenticated portal identity.</p></div></div>
+          <div className="setting-detail"><span className="setting-icon"><Users size={17} /></span><div><strong>{user.email ?? "Authenticated user"}</strong><small>Signed in with your secure account</small></div></div>
+          <div className="setting-detail"><span className="setting-icon"><Megaphone size={17} /></span><div><strong>{brand.name}</strong><small>{brand.country} · Current workspace</small></div></div>
+        </section>
+        <form className="card settings-card" onSubmit={savePreferences}>
+          <div className="card-head"><div><h3>Notifications</h3><p>Choose which updates you want to receive.</p></div></div>
+          <label className="toggle-row"><span><strong>Campaign updates</strong><small>Receive delivery and campaign status updates.</small></span><input type="checkbox" checked={emailNotifications} onChange={(event) => setEmailNotifications(event.target.checked)} /></label>
+          <label className="toggle-row"><span><strong>Weekly performance digest</strong><small>Get a summary of workspace activity each week.</small></span><input type="checkbox" checked={weeklyDigest} onChange={(event) => setWeeklyDigest(event.target.checked)} /></label>
+          <div className="settings-actions"><button className="primary" type="submit">Save preferences</button>{saved && <span className="saved-message">Preferences saved</span>}</div>
+        </form>
+      </div>
+    </div>
   );
 }
 

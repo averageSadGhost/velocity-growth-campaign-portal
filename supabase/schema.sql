@@ -10,10 +10,10 @@ create table public.brands (
   country text not null, accent text not null default '#ff6542', created_at timestamptz not null default now()
 );
 create table public.brand_members (
-  user_id uuid primary key references auth.users(id) on delete cascade,
+  user_id uuid references auth.users(id) on delete cascade,
   brand_id uuid not null references public.brands(id) on delete cascade,
   role public.member_role not null, created_at timestamptz not null default now(),
-  unique(user_id, brand_id)
+  primary key (user_id, brand_id)
 );
 create table public.contacts (
   id uuid primary key default gen_random_uuid(), brand_id uuid not null references public.brands(id) on delete cascade,

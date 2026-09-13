@@ -77,6 +77,7 @@ create policy "members read their brands" on public.brands for select to authent
 create policy "members read own membership" on public.brand_members for select to authenticated using (user_id = (select auth.uid()));
 create policy "members read contacts" on public.contacts for select to authenticated using (brand_id in (select public.member_brand_ids()));
 create policy "members read campaigns" on public.campaigns for select to authenticated using (brand_id in (select public.member_brand_ids()));
+create policy "owners create campaigns" on public.campaigns for insert to authenticated with check (public.is_brand_owner(brand_id));
 create policy "members read events" on public.provider_events for select to authenticated using (brand_id in (select public.member_brand_ids()));
 create policy "members read batches" on public.send_batches for select to authenticated using (brand_id in (select public.member_brand_ids()));
 create policy "owners create batches" on public.send_batches for insert to authenticated with check (public.is_brand_owner(brand_id));
@@ -90,5 +91,6 @@ revoke all on public.share_links from anon;
 revoke all on public.share_links from authenticated;
 
 grant select on public.brands, public.brand_members, public.contacts, public.campaigns, public.provider_events, public.send_batches, public.import_runs to authenticated;
+grant insert on public.campaigns to authenticated;
 grant insert, update on public.send_batches to authenticated;
 grant select, insert on public.share_links to authenticated;

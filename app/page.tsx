@@ -180,6 +180,7 @@ function Portal({
   const [sendLoading, setSendLoading] = useState(false);
   const [sendCount, setSendCount] = useState<number | null>(null);
   const [shareLoading, setShareLoading] = useState(false);
+  const [profileMenu, setProfileMenu] = useState(false);
   const [signupSeries, setSignupSeries] = useState<SignupPoint[]>([]);
   const selectedBrand =
     brands.find((brand) => brand.id === selectedBrandId) ?? brands[0];
@@ -418,15 +419,13 @@ function Portal({
           <button className="help">
             <CircleHelp size={17} /> Help centre
           </button>
-          <div className="profile">
-            <div className="avatar">
-              {(user.email?.[0] ?? "M").toUpperCase()}
-            </div>
-            <div>
-              <strong>{user.email?.split("@")[0]}</strong>
-              <small>Authenticated user</small>
-            </div>
-            <ChevronDown size={16} />
+          <div style={{ position: "relative" }}>
+            <button className="profile" style={{ cursor: "pointer", width: "100%", border: 0, background: "transparent" }} onClick={() => setProfileMenu((open) => !open)} aria-expanded={profileMenu}>
+              <div className="avatar">{(user.email?.[0] ?? "M").toUpperCase()}</div>
+              <div><strong>{user.email?.split("@")[0]}</strong><small>Authenticated user</small></div>
+              <ChevronDown size={16} />
+            </button>
+            {profileMenu && <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, right: 0, background: "#fff", border: "1px solid var(--line)", borderRadius: 10, padding: 10, boxShadow: "0 12px 30px #17212b18", zIndex: 3 }}><small style={{ display: "block", color: "var(--muted)", padding: "4px 6px 8px", overflow: "hidden", textOverflow: "ellipsis" }}>{user.email}</small><button className="ghost" style={{ width: "100%", justifyContent: "center" }} onClick={() => supabase.auth.signOut()}><LogOut size={14} /> Sign out</button></div>}
           </div>
         </div>
       </aside>

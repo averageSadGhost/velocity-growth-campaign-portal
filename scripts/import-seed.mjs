@@ -56,8 +56,8 @@ function date(v, name, warnings) {
 }
 function consent(v) {
   const s = (v ?? "").toLowerCase();
-  if (["true", "t", "yes", "1"].includes(s)) return true;
-  if (["false", "f", "no", "0", ""].includes(s)) return false;
+  if (["true", "t", "yes", "y", "1"].includes(s)) return true;
+  if (["false", "f", "no", "n", "0", ""].includes(s)) return false;
   throw new Error("Unrecognized marketing consent");
 }
 export function normalize(r, kind, brand) {
@@ -226,7 +226,7 @@ async function main() {
       file +
       "#" +
       hash +
-      (["contacts", "campaigns"].includes(kind) ? "#normalizer-v2" : "");
+      (["contacts", "campaigns"].includes(kind) ? "#normalizer-v3" : "");
     const { data: prior } = await db
       .from("import_runs")
       .select("id")

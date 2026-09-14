@@ -9,7 +9,7 @@ AI assistance: OpenAI Codex. Credentials and the synthetic source ZIP are not co
 ## Setup
 
 1. Run `npm ci` with Node 22.18+.
-2. Apply SQL in this order: `supabase/schema.sql`, `hardening.sql`, `results.sql`, `final-integrity.sql`, `import-validity.sql`, `security-maintenance.sql`.
+2. Apply SQL in this order: `supabase/schema.sql`, `hardening.sql`, `results.sql`, `final-integrity.sql`, `import-validity.sql`, `security-maintenance.sql`, `performance.sql`.
 3. Create the three brands and six Auth users. Insert exactly one `brand_members` owner/analyst membership per user. Do not grant self-service membership creation. The chosen Google account replaces the Karoo test owner.
 4. Enable Email and Google Auth. Register the Supabase `/auth/v1/callback` URL with Google. Set Supabase Site URL and allowed redirects to the actual application origin. Google sign-in does not grant membership.
 5. Copy `.env.example` to `.env.local` and fill values privately. Only URL and publishable key use the `NEXT_PUBLIC_` prefix. The server requires the service key, provider key/base URL, and a random `WORKER_SECRET`.
@@ -24,7 +24,7 @@ The browser uses the **Supabase publishable key**, not the service key. Authenti
 
 Tables: `brands`, `brand_members`, `contacts`, `campaigns`, `provider_events` (imported history), `send_batches` (historical send log), `import_runs`, `dispatches`, `delivery_events`, `share_links`, `share_attempts`.
 Views: `contact_eligibility`, `campaign_results`.
-Functions: `member_brand_ids`, `is_brand_owner`, `workspace_stats`, `prepare_dispatch`, `approve_dispatch`, `claim_dispatch`, `consume_share_attempt`, `preserve_approval`.
+Functions: `member_brand_ids`, `is_brand_owner`, `workspace_stats`, `prepare_dispatch`, `approve_dispatch`, `claim_dispatch`, `consume_share_attempt`, `preserve_approval`, `suppressing_event`, `apply_event_suppression`, `inherit_event_suppression`.
 
 RLS lives in `supabase/schema.sql`, extended in the subsequent SQL files. Reporting views are SECURITY INVOKER. Service-only RPCs reject client execution; APIs authenticate first and derive the actor from the validated session. Composite foreign keys enforce same-brand campaign/dispatch relationships. Default grants are revoked for future public tables/functions created by postgres: new data is closed until explicitly reviewed and granted.
 
@@ -33,13 +33,21 @@ RLS lives in `supabase/schema.sql`, extended in the subsequent SQL files. Report
 The parser handles BOM, comma/semicolon exports, quoted newlines, escaped quotes, case/space header differences and decimal-comma spend. Consent accepts true/false, yes/no, y/n, t/f and 1/0 in any case; anything else is rejected as ambiguous. Exact file hash plus normalizer version identifies an import. Brand + external ID (event ID for events) is the upsert key. Last valid duplicate wins within a file; the dated delta is applied after the base. Imports expose row numbers and reasons, including rejected records and normalization warnings. Invalid consent/brand rows are rejected; ambiguous deletion/suppression dates block sending. Rejected legacy contacts remain available only to the administrator for audit, not in tenant views/totals/sends.
 
 - Total customers: valid imported identities per brand, including inactive, deleted and suppressed contacts. Not a count of unique email addresses.
-- Contactable: active + marketing consent + no deletion + no current suppression, excluding any historical or live bounce, complaint or unsubscribe. This conservative suppression does not automatically reset on a later delivery. Actual email/SMS destination validity and deduplication are checked at preview.
-- Daily signups: signup timestamp grouped by UTC day, last 30 calendar days including today, zero-filled. Unknown timestamps do not contribute.
+- Contactable: active + marketing consent + no deletion + no current suppression, excluding any historical or live bounce, complaint or unsubscribe. This conservative suppression does not automatically reset on a later delivery. Event suppression is precomputed in `contacts.event_suppressed` by insert triggers on both event tables (and inherited by newly imported contacts), so eligibility is a row-local check that stays current without scanning event history per request. Actual email/SMS destination validity and deduplication are checked at preview.
+- Daily signups: signup timestamp grouped by UTC day, last 30 calendar days including today, zero-filled. Unknown timestamps and quarantined rows do not contribute.
 - Imported campaigns retain explicitly labeled reported totals; opens can exceed sent because they may be repeated events.
 - Live sends count provider-accepted recipients as sent, unique recipients for delivery/open/click/bounce, and a bounce overrides delivery. These are observed reports, not assumed delivery. A polling campaign may still receive later events.
 - Historical send logs are retained separately; the source did not include their exact recipient identities, so the app does not invent an approval snapshot.
 
 Contacts/campaigns use server-side filtering and 40-row pages. CSV export fetches all matching pages, not just the visible page. Spreadsheet formula prefixes are escaped. Search exists only on Contacts and Campaigns.
+
+## Performance
+
+- Dashboard stats are fetched only while the Overview is open, never on contact page flips. `workspace_stats` is one indexed pass over the brand's contacts plus one range scan for signups (about 150 ms for the 82k-contact brand).
+- The browser keeps a per-session cache keyed by brand, tab, search and page. A cached view renders instantly and revalidates in the background after 60 s or on the 30 s refresh tick, which only runs while the tab is visible. The next page is prefetched. Sends and new campaigns invalidate the cache.
+- Contact search uses trigram GIN indexes on name, email and external ID instead of a sequential scan.
+- The Imports list carries only an `issue_count`; a run's diagnostics load on demand and are grouped by reason with row numbers.
+- The UI font is self-hosted through `next/font`, so first paint has no third-party request.
 
 ## Durable sending and reports
 

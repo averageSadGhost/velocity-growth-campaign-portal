@@ -1,8 +1,11 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@/lib/supabase";
 type Row = Record<string, any>;
+type Issue = { reason: string; count: number; lines: number[] };
 const PAGE = 40;
+// Cached views are served instantly and revalidated after this age or on refresh.
+const TTL = 60000;
 function csv(name: string, rows: Row[]) {
   if (!rows.length) return;
   const fields = Object.keys(rows[0]);
@@ -24,6 +27,27 @@ function csv(name: string, rows: Row[]) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function IssueList({ list }: { list?: Issue[] | "loading" | "error" }) {
+  if (!list || list === "loading") return <p>Loading issues…</p>;
+  if (list === "error") return <p className="error">Could not load issues.</p>;
+  if (!list.length) return <p>No issues recorded.</p>;
+  return (
+    <>
+      {list.map((g) => (
+        <p key={g.reason}>
+          <b>{g.count.toLocaleString()}</b> × {g.reason}
+          <small>
+            {" "}
+            rows {g.lines.slice(0, 20).join(", ")}
+            {g.lines.length > 20
+              ? ` and ${(g.lines.length - 20).toLocaleString()} more`
+              : ""}
+          </small>
+        </p>
+      ))}
+    </>
+  );
 }
 export default function Home() {
   const db = useMemo(() => createBrowserClient(), []);
@@ -54,6 +78,15 @@ export default function Home() {
     [sharePassword, setSharePassword] = useState(""),
     [shareUrl, setShareUrl] = useState(""),
     [creating, setCreating] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(false),
+    [refreshing, setRefreshing] = useState(false),
+    [issues, setIssues] = useState<
+      Record<string, Issue[] | "loading" | "error">
+    >({});
+  // Session cache: repeat views render instantly, then revalidate in the background.
+  const cache = useRef(new Map<string, { at: number; value: any }>()),
+    statsRevision = useRef(0),
+    tableRevision = useRef(0);
   const brand = brands.find((b) => b.id === brandId),
     owner = members.some((m) => m.brand_id === brandId && m.role === "owner");
   useEffect(() => {
@@ -64,12 +97,11 @@ export default function Home() {
       return;
     }
     if (params.has("auth_error")) setError("Google sign-in could not be completed. Please try again.");
-    db.auth.getUser().then(({ data }) => {
-      setUser(data.user);
-      setAuthReady(true);
-    });
+    // INITIAL_SESSION arrives from local storage, so first paint needs no auth round trip.
     const { data } = db.auth.onAuthStateChange((_e, s) => {
-      setUser(s?.user ?? null);
+      setUser((current) =>
+        current?.id === s?.user?.id ? current : (s?.user ?? null),
+      );
       setAuthReady(true);
     });
     return () => data.subscription.unsubscribe();
@@ -105,7 +137,9 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [query]);
   useEffect(() => {
-    const timer = setInterval(() => setRevision((v) => v + 1), 30000);
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") setRevision((v) => v + 1);
+    }, 30000);
     return () => clearInterval(timer);
   }, []);
   function tableRequest(offset: number, size: number) {
@@ -123,7 +157,7 @@ export default function Home() {
         contacts
           ? "id,external_id,full_name,email,phone,country,city,status,consent_marketing,signup_at,eligible"
           : imports
-            ? "id,source_file,rows_seen,rows_imported,rows_skipped,errors,created_at"
+            ? "id,source_file,rows_seen,rows_imported,rows_skipped,issue_count,created_at"
             : "*",
         { count: "exact" },
       )
@@ -140,40 +174,117 @@ export default function Home() {
       .order(imports ? "created_at" : "id", { ascending: !imports })
       .range(offset, offset + size - 1);
   }
+  const remember = (key: string, value: any) =>
+    cache.current.set(key, { at: Date.now(), value });
+  const fresh = (hit?: { at: number }) => !!hit && Date.now() - hit.at < TTL;
+  const tableKey = (p: number) => `table:${brandId}:${tab}:${search}:${p}`;
+  function invalidate() {
+    cache.current.clear();
+    setRevision((v) => v + 1);
+  }
+  function prefetch(nextPage: number, total: number) {
+    const key = tableKey(nextPage);
+    if (nextPage * PAGE >= total || cache.current.has(key)) return;
+    Promise.resolve(tableRequest(nextPage * PAGE, PAGE)).then((r) => {
+      if (!r.error) remember(key, { rows: r.data ?? [], count: r.count ?? 0 });
+    });
+  }
+  // Dashboard stats load only while the Overview is visible and are cached per brand.
+  useEffect(() => {
+    if (!brandId || tab !== "Overview") return;
+    const key = `stats:${brandId}`,
+      hit = cache.current.get(key),
+      forced = statsRevision.current !== revision;
+    statsRevision.current = revision;
+    setStats(hit?.value ?? {});
+    if (hit && !forced && fresh(hit)) return;
+    let cancelled = false;
+    setStatsLoading(!hit);
+    db.rpc("workspace_stats", { target: brandId }).then((s) => {
+      if (cancelled) return;
+      if (s.error) setError(s.error.message);
+      else {
+        remember(key, s.data ?? {});
+        setStats(s.data ?? {});
+      }
+      setStatsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [brandId, tab, revision, db]);
+  // Table pages are cached per brand, tab, search and page; the next page is prefetched.
   useEffect(() => {
     if (!brandId) return;
+    const key = tableKey(page),
+      hit = cache.current.get(key),
+      forced = tableRevision.current !== revision;
+    tableRevision.current = revision;
+    if (hit) {
+      setRows(hit.value.rows);
+      setCount(hit.value.count);
+    }
+    if (hit && !forced && fresh(hit)) {
+      setLoading(false);
+      prefetch(page + 1, hit.value.count);
+      return;
+    }
     let cancelled = false;
-    setLoading(true);
+    setLoading(!hit);
+    setRefreshing(!!hit);
     setError("");
-    Promise.all([
-      db.rpc("workspace_stats", { target: brandId }),
-      tableRequest(page * PAGE, PAGE),
-    ])
-      .then(([s, r]) => {
+    Promise.resolve(tableRequest(page * PAGE, PAGE))
+      .then((r) => {
         if (cancelled) return;
-        if (s.error || r.error) {
-          setError(
-            s.error?.message ?? r.error?.message ?? "Unable to load data",
-          );
-          setRows([]);
-          setStats({});
+        if (r.error) {
+          setError(r.error.message);
+          if (!hit) {
+            setRows([]);
+            setCount(0);
+          }
         } else {
-          setStats(s.data ?? {});
-          setRows(r.data ?? []);
-          setCount(r.count ?? 0);
+          const value = { rows: r.data ?? [], count: r.count ?? 0 };
+          remember(key, value);
+          setRows(value.rows);
+          setCount(value.count);
+          prefetch(page + 1, value.count);
         }
         setLoading(false);
+        setRefreshing(false);
       })
       .catch((e) => {
         if (!cancelled) {
           setError(e.message);
           setLoading(false);
+          setRefreshing(false);
         }
       });
     return () => {
       cancelled = true;
     };
   }, [brandId, tab, page, search, revision, db]);
+  async function loadIssues(id: string) {
+    if (issues[id]) return;
+    setIssues((v) => ({ ...v, [id]: "loading" }));
+    const { data, error: e } = await db
+      .from("import_runs")
+      .select("errors")
+      .eq("id", id)
+      .single();
+    if (e) return setIssues((v) => ({ ...v, [id]: "error" }));
+    const groups = new Map<string, number[]>();
+    for (const issue of (data.errors ?? []) as { line: number; reason: string }[]) {
+      const lines = groups.get(issue.reason) ?? [];
+      lines.push(issue.line);
+      groups.set(issue.reason, lines);
+    }
+    setIssues((v) => ({
+      ...v,
+      [id]: [...groups]
+        .map(([reason, lines]) => ({ reason, count: lines.length, lines }))
+        .sort((a, b) => b.count - a.count),
+    }));
+  }
   async function api(path: string, body: Row) {
     const {
       data: { session },
@@ -203,11 +314,14 @@ export default function Home() {
     }
   }
   function navigate(next: string) {
+    const hit = cache.current.get(`table:${brandId}:${next}::0`);
     setTab(next);
     setPage(0);
     setQuery("");
     setSearch("");
-    setRows([]);
+    setRows(hit?.value.rows ?? []);
+    setCount(hit?.value.count ?? 0);
+    setLoading(!hit);
     setPreview(null);
     setSharing(null);
     setMenu(false);
@@ -408,10 +522,7 @@ export default function Home() {
           {error && (
             <div role="alert" className="error">
               {error}
-              <button
-                className="link"
-                onClick={() => setRevision((v) => v + 1)}
-              >
+              <button className="link" onClick={invalidate}>
                 Retry loading
               </button>
             </div>
@@ -450,7 +561,9 @@ export default function Home() {
                     <div className="metric">
                       <span>Total customers</span>
                       <strong>
-                        {loading ? "…" : (stats.total?.toLocaleString() ?? "—")}
+                        {statsLoading
+                          ? "…"
+                          : (stats.total?.toLocaleString() ?? "—")}
                       </strong>
                       <small>
                         One valid imported row per brand + external ID,
@@ -460,7 +573,7 @@ export default function Home() {
                     <div className="metric">
                       <span>Contactable customers</span>
                       <strong>
-                        {loading
+                        {statsLoading
                           ? "…"
                           : (stats.contactable?.toLocaleString() ?? "—")}
                       </strong>
@@ -508,7 +621,10 @@ export default function Home() {
                         ? "Import history"
                         : tab}
                   </h2>
-                  <p>{count.toLocaleString()} matching records</p>
+                  <p>
+                    {count.toLocaleString()} matching records
+                    {refreshing ? " · refreshing…" : ""}
+                  </p>
                 </div>
                 <div className="action-row">
                   {tab !== "Imports" && (
@@ -608,11 +724,15 @@ export default function Home() {
                                 {r.rows_skipped}
                               </td>
                               <td>
-                                <details>
+                                <details
+                                  onToggle={(e) => {
+                                    if (e.currentTarget.open) loadIssues(r.id);
+                                  }}
+                                >
                                   <summary>
-                                    {r.errors?.length ?? 0} issues
+                                    {(r.issue_count ?? 0).toLocaleString()} issues
                                   </summary>
-                                  <pre>{JSON.stringify(r.errors, null, 2)}</pre>
+                                  <IssueList list={issues[r.id]} />
                                 </details>
                               </td>
                               <td>{new Date(r.created_at).toLocaleString()}</td>
@@ -838,7 +958,7 @@ export default function Home() {
                     setNotice(
                       `Approved. Delivery record ${result.id}. Progress refreshes automatically.`,
                     );
-                    setRevision((v) => v + 1);
+                    invalidate();
                   })
                 }
               >
@@ -933,7 +1053,7 @@ export default function Home() {
                   });
                 if (e) throw e;
                 setCreating(false);
-                setRevision((v) => v + 1);
+                invalidate();
               });
             }}
           >
